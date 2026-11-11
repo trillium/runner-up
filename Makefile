@@ -1,4 +1,4 @@
-.PHONY: build test test-real-tart fmt lint dist install clean
+.PHONY: build test test-real-tart fmt lint lint-scripts dist install clean
 
 VERSION ?= dev
 LDFLAGS := -X github.com/kunchenguid/runner-up/internal/version.Version=$(VERSION)
@@ -20,6 +20,12 @@ fmt:
 lint:
 	gofmt -l .
 	go vet ./...
+
+# The satellite launch script and its example config. CI does not run this;
+# run it before opening a change to either file.
+lint-scripts:
+	@command -v shellcheck >/dev/null 2>&1 || { echo "shellcheck is not installed"; exit 1; }
+	shellcheck scripts/launch-satellite.sh scripts/satellite.example.conf
 
 dist:
 	@mkdir -p dist
