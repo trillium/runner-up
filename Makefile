@@ -21,11 +21,11 @@ lint:
 	gofmt -l .
 	go vet ./...
 
-# The satellite launch script and its example config. CI does not run this;
-# run it before opening a change to either file.
+# The satellite launch script, reset script, loop driver, and example config.
+# CI does not run this; run it before opening a change to any of these files.
 lint-scripts:
 	@command -v shellcheck >/dev/null 2>&1 || { echo "shellcheck is not installed"; exit 1; }
-	shellcheck scripts/launch-satellite.sh scripts/satellite.example.conf
+	shellcheck scripts/launch-satellite.sh scripts/reset-satellite.sh scripts/reset-loop.sh scripts/satellite.example.conf
 
 dist:
 	@mkdir -p dist
