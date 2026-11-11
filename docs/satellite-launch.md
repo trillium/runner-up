@@ -152,15 +152,79 @@ a dry run never blocks and never changes the machine.
 ## Verifying without a machine
 
 ```sh
-shellcheck scripts/launch-satellite.sh scripts/satellite.example.conf
+shellcheck scripts/launch-satellite.sh scripts/reset-satellite.sh scripts/reset-loop.sh scripts/satellite.example.conf
 make lint-scripts
 ./scripts/launch-satellite.sh --dry-run --config scripts/satellite.example.conf
+./scripts/reset-satellite.sh --dry-run
 ```
 
 The dry run prints every command, including the `runner-up machine add` line,
 without running anything. It needs no sudo and no network. `make lint-scripts`
 runs the same ShellCheck check and says what to install when ShellCheck is
 missing.
+
+## Resetting a satellite (test-bed only)
+
+The production design for satellites is **non-destructive**: machines borrow
+idle compute, running jobs in disposable Tart VMs or containers without modifying
+or wiping the host machine.
+
+`scripts/reset-satellite.sh` is a **destructive test-bed tool** designed solely
+for dedicated test machines (such as `mini3`) to prove launch script reliability
+from a bare OS over repeated wiped cycles. It removes:
+- **Nix**: unloads daemons, deletes the APFS `/nix` volume, cleans `/etc/synthetic.conf`, `/etc/fstab`, shell profiles, and removes `_nixbld` build users.
+- **Homebrew**: removes `/opt/homebrew` (or Intel prefixes), Homebrew caches, and logs.
+- **Installed tools**: stops and deletes Tart VMs and caches, removes Claude Code, Pi, and GitHub CLI config.
+- **Dotfiles**: removes the cloned dotfiles repository, satellite-launch state, and resets shell dotfiles in `$HOME`.
+- **Fleet folders**: removes `$SATELLITE_FIRSTMATE_HOME` (`~/fm_home`).
+- **User caches and temporary files**: cleans `~/Downloads`, `~/.cache`, and test files in `/tmp`.
+
+### Safety guarantees
+- **SSH access preserved**: Never touches `~/.ssh/authorized_keys`, `known_hosts`, or user keys.
+- **Tailscale preserved**: Never touches `/Applications/Tailscale.app` or Tailscale credentials/daemon so remote connection stays alive.
+- **User account preserved**: Never deletes the user account itself.
+
+By default, the script runs in dry-run mode and prints what it would remove:
+```sh
+./scripts/reset-satellite.sh
+```
+
+To perform the actual wipe:
+```sh
+./scripts/reset-satellite.sh --yes
+```
+
+## Repeatable reset and launch loop
+
+`scripts/reset-loop.sh` drives automated reset and launch cycles over SSH from a
+controller machine. It supports two modes:
+1. **Non-destructive lifecycle mode (`--no-reset`)**: the primary product path.
+   Measures setup time, step pass/fail, and pool registration while leaving the
+   host completely intact.
+2. **Destructive test-bed mode (`--reset`, default)**: wipes and rebuilds dedicated
+   test beds (e.g. `mini3`) over N rounds to prove bare-metal repeatability.
+
+Features:
+- **Zero prerequisites on target**: requires only standard SSH; copies required scripts and config to a temporary remote directory using built-in `tar`.
+- **Tolerant to slow/wedged hosts**: enforces configurable connection timeouts (`--ssh-timeout`, default 15s) and reachability checks before and after reset and launch.
+- **Tracks step-level status**: records duration, per-step pass/fail, reachability, and failure log tails.
+- **Manual-step stop handling**: human sign-ins (GitHub, Tailscale, Claude, Pi) are paused and recorded as `MANUAL_STOP` rather than failures; once satisfied, the loop resumes.
+- **Markdown output**: outputs a structured results table and diagnostics to `docs/reset-loop-results.md` (or `--output`).
+
+### Usage
+
+```sh
+# Primary non-destructive lifecycle check (leaves host intact):
+./scripts/reset-loop.sh --host satellite-1 --no-reset
+
+# Destructive test-bed loop (e.g. mini3):
+./scripts/reset-loop.sh --host mini3 --rounds 3 --config scripts/satellite.local.conf
+
+# Dry run verification:
+./scripts/reset-loop.sh --host mini3 --dry-run
+```
+
+See [docs/reset-loop-results.md](reset-loop-results.md) for table results and non-automatable steps details.
 
 ## Linux
 
