@@ -379,6 +379,34 @@ wipe_user_contents() {
   fi
 }
 
+SUDO_KEEPALIVE_PID=""
+
+# ensure_sudo proves sudo works before anything is deleted. Without it the
+# sudo steps below fail silently (their errors are ignored), so the machine
+# would be left half wiped. A password prompt needs a terminal: run over
+# ssh -t. When no password can be given, stop with the manual-step code the
+# loop driver understands.
+ensure_sudo() {
+  if sudo -n true 2>/dev/null; then
+    :
+  elif [ -t 0 ]; then
+    log "sudo needs your password for the Homebrew and Nix steps"
+    sudo -v || die "sudo was not authorized; nothing was deleted"
+  else
+    log "MANUAL_STEP_STOP: sudo (run this over a terminal: ssh -t HOST, so sudo can ask for a password; nothing was deleted)"
+    exit 10
+  fi
+  # Keep the sudo ticket fresh while the long steps run.
+  (
+    while kill -0 "$$" 2>/dev/null; do
+      sudo -n true 2>/dev/null || exit 0
+      sleep 30
+    done
+  ) &
+  SUDO_KEEPALIVE_PID=$!
+  trap '[ -z "$SUDO_KEEPALIVE_PID" ] || kill "$SUDO_KEEPALIVE_PID" 2>/dev/null || true' EXIT
+}
+
 summary() {
   step "Reset summary"
   verify_ssh_safety
@@ -445,6 +473,10 @@ main() {
   else
     log "PERFORMING WIPE (--yes): resetting satellite to bare state"
     log "WARNING: This is a DESTRUCTIVE test-bed operation. Ensure this machine is a dedicated test host."
+  fi
+
+  if [ "$DRY_RUN" = 0 ]; then
+    ensure_sudo
   fi
 
   wipe_processes

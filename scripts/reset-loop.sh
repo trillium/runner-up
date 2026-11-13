@@ -156,6 +156,21 @@ ssh_opts() {
   printf '%s' "-o ConnectTimeout=$SSH_TIMEOUT -o ServerAliveInterval=10 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=accept-new"
 }
 
+# run_ssh_tty is for the long steps. With a terminal on stdin (and not --batch)
+# it forces a remote terminal so sudo can ask for a password; otherwise it is a
+# plain ssh.
+run_ssh_tty() {
+  local opts
+  opts=$(ssh_opts)
+  if [ "$BATCH_MODE" != 1 ] && [ -t 0 ]; then
+    # shellcheck disable=SC2086,SC2029
+    ssh -tt $opts "$HOST" "$@"
+  else
+    # shellcheck disable=SC2086,SC2029
+    ssh $opts "$HOST" "$@"
+  fi
+}
+
 check_reachability() {
   local opts
   opts=$(ssh_opts)
@@ -332,13 +347,17 @@ main() {
 
       # Run reset script on target
       set +e
-      # shellcheck disable=SC2086,SC2029
-      ssh $opts "$HOST" "bash $remote_dir/scripts/reset-satellite.sh $reset_flags --config $remote_config" >> "$round_log" 2>&1
-      local reset_rc=$?
+      run_ssh_tty "bash $remote_dir/scripts/reset-satellite.sh $reset_flags --config $remote_config" 2>&1 | tee -a "$round_log" >&2
+      local reset_rc=${PIPESTATUS[0]}
       set -e
       reset_duration=$(( $(date +%s) - reset_start ))
 
-      if [ "$reset_rc" -ne 0 ]; then
+      if [ "$reset_rc" -eq 10 ]; then
+        log "Round $round_num: reset stopped at a manual step; nothing was deleted: $(grep 'MANUAL_STEP_STOP:' "$round_log" | tail -n 1 | sed 's/.*MANUAL_STEP_STOP: //')"
+        reset_status="MANUAL_STOP"
+        failure_step="Reset (manual step)"
+        total_manual_stops=$(( total_manual_stops + 1 ))
+      elif [ "$reset_rc" -ne 0 ]; then
         log "Round $round_num: reset failed with code $reset_rc"
         reset_status="FAIL"
         failure_step="Reset"
@@ -385,9 +404,8 @@ main() {
       local launch_done=0
       while [ "$launch_done" -eq 0 ]; do
         set +e
-        # shellcheck disable=SC2086,SC2029
-        ssh $opts "$HOST" "bash $remote_dir/scripts/launch-satellite.sh $launch_flags" >> "$round_log" 2>&1
-        local launch_rc=$?
+        run_ssh_tty "bash $remote_dir/scripts/launch-satellite.sh $launch_flags" 2>&1 | tee -a "$round_log" >&2
+        local launch_rc=${PIPESTATUS[0]}
         set -e
 
         if [ "$launch_rc" -eq 0 ]; then
@@ -452,7 +470,9 @@ main() {
 
     # Evaluate overall round status
     local overall_result="PASS"
-    if [ "$reset_status" = "FAIL" ] || [ "$launch_status" = "FAIL" ] || [ "$post_launch_reach" != "reachable" ]; then
+    if [ "$reset_status" = "MANUAL_STOP" ]; then
+      overall_result="MANUAL_STOP"
+    elif [ "$reset_status" = "FAIL" ] || [ "$launch_status" = "FAIL" ] || [ "$post_launch_reach" != "reachable" ]; then
       overall_result="FAIL"
       total_failed=$(( total_failed + 1 ))
       if [ -f "$round_log" ]; then
