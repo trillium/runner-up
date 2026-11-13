@@ -23,6 +23,7 @@ SSH_TIMEOUT=15
 DRY_RUN=0
 BATCH_MODE=0
 KEEP_REMOTE=0
+SUDO_PASSWORD_FILE=""
 ENABLE_RESET=1
 
 usage() {
@@ -39,6 +40,8 @@ usage: $SCRIPT_NAME [OPTIONS] --host HOST
   --reset                  destructive test-bed mode: wipe bare before launch (default)
   --dry-run                run reset and launch in dry-run mode
   --batch                  non-interactive mode (do not wait at manual prompts)
+  --sudo-password-file F   local owner-only file holding the host's sudo password; copied
+                           to the host for this run only, removed afterwards, never logged
   --keep-remote            keep transferred scripts on remote host for inspection
   --help                   show this help
 
@@ -115,6 +118,12 @@ parse_args() {
         BATCH_MODE=1
         shift
         ;;
+      --sudo-password-file)
+        [ $# -ge 2 ] || die "--sudo-password-file requires a file path"
+        SUDO_PASSWORD_FILE=$2
+        [ -f "$SUDO_PASSWORD_FILE" ] || die "sudo password file not found: $SUDO_PASSWORD_FILE"
+        shift 2
+        ;;
       --keep-remote)
         KEEP_REMOTE=1
         shift
@@ -171,6 +180,14 @@ run_ssh_tty() {
   fi
 }
 
+# remote_env prefixes remote commands so the sudo shim comes first on PATH.
+remote_env() {
+  if [ -n "$SUDO_PASSWORD_FILE" ]; then
+    # shellcheck disable=SC2016
+    printf 'PATH=%s/shim:$PATH ' "$1"
+  fi
+}
+
 check_reachability() {
   local opts
   opts=$(ssh_opts)
@@ -195,7 +212,7 @@ deploy_scripts() {
   opts=$(ssh_opts)
   log "creating temporary working directory on $HOST"
   # shellcheck disable=SC2086
-  remote_dir=$(ssh $opts "$HOST" "mktemp -d /tmp/satloop.XXXXXX")
+  remote_dir=$(ssh $opts "$HOST" "mktemp -d /tmp/runnerup-loop.XXXXXX")
   [ -n "$remote_dir" ] || die "failed to create temporary directory on $HOST"
 
   log "transferring scripts to $HOST:$remote_dir"
@@ -228,11 +245,31 @@ deploy_scripts() {
     ) | ssh $opts "$HOST" "tar -xzf - -C $remote_dir"
   fi
 
+  if [ -n "$SUDO_PASSWORD_FILE" ]; then
+    # A sudo shim that answers the password prompt from a file in the
+    # temporary directory, so unattended runs can use sudo without a terminal.
+    # shellcheck disable=SC2086,SC2029
+    ssh $opts "$HOST" "umask 077; mkdir -p $remote_dir/shim; cat > $remote_dir/shim/pw" < "$SUDO_PASSWORD_FILE"
+    # shellcheck disable=SC2086,SC2029
+    ssh $opts "$HOST" "cat > $remote_dir/shim/sudo; chmod 700 $remote_dir/shim/sudo" <<'SHIM'
+#!/bin/sh
+[ "$1" = "-n" ] && shift
+exec /usr/bin/sudo -S -p '' "$@" < "$(dirname "$0")/pw"
+SHIM
+  fi
+
   printf '%s' "$remote_dir"
 }
 
 cleanup_remote() {
   local remote_dir=$1
+  if [ -n "$SUDO_PASSWORD_FILE" ]; then
+    # shellcheck disable=SC2086,SC2029
+    local cleanup_opts
+    cleanup_opts=$(ssh_opts)
+    # shellcheck disable=SC2086,SC2029
+    ssh $cleanup_opts "$HOST" "rm -rf $remote_dir/shim" 2>/dev/null || true
+  fi
   if [ "$KEEP_REMOTE" = 1 ]; then
     log "keeping remote directory $HOST:$remote_dir"
     return 0
@@ -347,7 +384,7 @@ main() {
 
       # Run reset script on target
       set +e
-      run_ssh_tty "bash $remote_dir/scripts/reset-satellite.sh $reset_flags --config $remote_config" 2>&1 | tee -a "$round_log" >&2
+      run_ssh_tty "$(remote_env "$remote_dir")bash $remote_dir/scripts/reset-satellite.sh $reset_flags --config $remote_config" 2>&1 | tee -a "$round_log" >&2
       local reset_rc=${PIPESTATUS[0]}
       set -e
       reset_duration=$(( $(date +%s) - reset_start ))
@@ -404,7 +441,7 @@ main() {
       local launch_done=0
       while [ "$launch_done" -eq 0 ]; do
         set +e
-        run_ssh_tty "bash $remote_dir/scripts/launch-satellite.sh $launch_flags" 2>&1 | tee -a "$round_log" >&2
+        run_ssh_tty "$(remote_env "$remote_dir")bash $remote_dir/scripts/launch-satellite.sh $launch_flags" 2>&1 | tee -a "$round_log" >&2
         local launch_rc=${PIPESTATUS[0]}
         set -e
 

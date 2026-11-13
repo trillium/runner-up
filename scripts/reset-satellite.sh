@@ -115,6 +115,8 @@ remove_path() {
     sudo rm -rf "$target"
   else
     printf '  + rm -rf %s\n' "$target"
+    # Git objects and hooks are read-only; make them removable first.
+    chmod -R u+w "$target" 2>/dev/null || true
     rm -rf "$target"
   fi
 }
