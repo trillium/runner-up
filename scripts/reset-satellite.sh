@@ -112,7 +112,13 @@ remove_path() {
   fi
   if [ "$sudo_required" = 1 ]; then
     printf '  + sudo rm -rf %s\n' "$target"
-    sudo rm -rf "$target"
+    # A service still writing into the tree can make rm report "Directory not empty"; retry.
+    local try
+    for try in 1 2 3; do
+      sudo rm -rf "$target" && break
+      [ "$try" -lt 3 ] || die "could not remove $target"
+      sleep 2
+    done
   else
     printf '  + rm -rf %s\n' "$target"
     # Git objects and hooks are read-only; make them removable first.
@@ -244,6 +250,20 @@ wipe_tools() {
 
 wipe_homebrew() {
   step "Homebrew"
+  # Stop Homebrew services (databases and the like) so nothing writes into
+  # the prefix while it is removed.
+  if [ "$DRY_RUN" = 1 ]; then
+    printf '  [dry-run] would stop Homebrew services and processes running from /opt/homebrew\n'
+  else
+    local plist
+    for plist in "$HOME"/Library/LaunchAgents/homebrew.mxcl.*.plist; do
+      [ -e "$plist" ] || continue
+      launchctl bootout "gui/$(id -u)" "$plist" 2>/dev/null || true
+      rm -f "$plist"
+    done
+    pkill -f '^/opt/homebrew/' 2>/dev/null || true
+    sleep 2
+  fi
   # Apple Silicon prefix
   if [ -d "/opt/homebrew" ]; then
     remove_path "/opt/homebrew" 1
