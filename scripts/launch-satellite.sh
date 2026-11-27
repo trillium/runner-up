@@ -23,6 +23,9 @@ set -euo pipefail
 SCRIPT_NAME=${0##*/}
 SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 DRY_RUN=0
+YES_MODE=0
+STOP_ON_MANUAL=0
+TARGET_STEP=""
 CONFIG_FILE=""
 OS=""
 
@@ -62,11 +65,15 @@ SATELLITE_RUNNER_UP_COORDINATOR=""
 
 usage() {
   cat <<EOF
-usage: $SCRIPT_NAME [--dry-run] [--config FILE]
+usage: $SCRIPT_NAME [--dry-run] [--yes] [--stop-on-manual] [--step NAME] [--config FILE]
 
-  --dry-run, -n   print every step without running it
-  --config FILE   the per-machine config; default $SCRIPT_DIR/satellite.local.conf
-  --help, -h      show this help
+  --yes, -y           auto-confirm prompts for automated steps
+  --stop-on-manual    stop and exit (code 10) on steps requiring human sign-in
+  --step NAME         run only the named step (hostname, nix, homebrew, dotfiles,
+                      tools, accounts, firstmate, tailnet, runner_up)
+  --dry-run, -n       print every step without running it
+  --config FILE       the per-machine config; default $SCRIPT_DIR/satellite.local.conf
+  --help, -h          show this help
 
 Start from scripts/satellite.example.conf. The full reference is in
 docs/satellite-launch.md.
@@ -96,6 +103,10 @@ ask() {
   local prompt=$1 answer
   if [ "$DRY_RUN" = 1 ]; then
     printf '  [dry-run] would ask: %s\n' "$prompt"
+    return 0
+  fi
+  if [ "$YES_MODE" = 1 ]; then
+    log "auto-confirming: $prompt"
     return 0
   fi
   if [ ! -r /dev/tty ]; then
@@ -485,6 +496,10 @@ account_github() {
     log "GitHub is already signed in"
     return 0
   fi
+  if [ "$STOP_ON_MANUAL" = 1 ]; then
+    log "MANUAL_STEP_STOP: github (GitHub authentication required via gh auth login)"
+    exit 10
+  fi
   ask "GitHub sign-in opens a browser and needs your account. Continue?"
   gh auth login
   gh auth status >/dev/null 2>&1 || die "gh auth status still fails after sign-in"
@@ -503,6 +518,10 @@ account_tailscale() {
     log "Tailscale is already signed in"
     return 0
   fi
+  if [ "$STOP_ON_MANUAL" = 1 ]; then
+    log "MANUAL_STEP_STOP: tailscale (Tailscale authentication required via tailscale up)"
+    exit 10
+  fi
   ask "Tailscale sign-in opens a browser and needs your account. Continue?"
   "$cli" up
   "$cli" status >/dev/null 2>&1 || die "tailscale status still fails after sign-in"
@@ -516,6 +535,27 @@ account_agent() {
   fi
   if ! need "$name"; then
     die "$name sign-in needs $name; add $name to SATELLITE_TOOLS"
+  fi
+  local is_signed_in=0
+  case $name in
+    claude)
+      if [ -f "$HOME/.claude.json" ] || [ -d "$HOME/.claude" ] || [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+        is_signed_in=1
+      fi
+      ;;
+    pi)
+      if [ -f "$HOME/.pi" ] || [ -d "$HOME/.config/pi" ]; then
+        is_signed_in=1
+      fi
+      ;;
+  esac
+  if [ "$is_signed_in" = 1 ]; then
+    log "$name is already signed in"
+    return 0
+  fi
+  if [ "$STOP_ON_MANUAL" = 1 ]; then
+    log "MANUAL_STEP_STOP: $name ($name sign-in required via $name /login)"
+    exit 10
   fi
   log "Sign in to $name in another terminal: run $name, then /login"
   ask "Press y once $name is signed in."
@@ -681,11 +721,36 @@ summary() {
   fi
 }
 
+run_step() {
+  local name=$1 func=$2
+  if [ -n "$TARGET_STEP" ] && [ "$TARGET_STEP" != "$name" ]; then
+    return 0
+  fi
+  "$func"
+}
+
 main() {
   while [ $# -gt 0 ]; do
     case $1 in
       --dry-run | -n)
         DRY_RUN=1
+        shift
+        ;;
+      --yes | -y)
+        YES_MODE=1
+        shift
+        ;;
+      --stop-on-manual)
+        STOP_ON_MANUAL=1
+        shift
+        ;;
+      --step)
+        [ $# -ge 2 ] || die "--step needs a step name"
+        TARGET_STEP=$2
+        shift 2
+        ;;
+      --step=*)
+        TARGET_STEP=${1#--step=}
         shift
         ;;
       --config)
@@ -724,15 +789,15 @@ main() {
     log "dry run: every step is printed and nothing is run"
   fi
 
-  step_hostname
-  step_nix
-  step_homebrew
-  step_dotfiles
-  step_tools
-  step_accounts
-  step_firstmate
-  step_tailnet
-  step_runner_up
+  run_step hostname step_hostname
+  run_step nix step_nix
+  run_step homebrew step_homebrew
+  run_step dotfiles step_dotfiles
+  run_step tools step_tools
+  run_step accounts step_accounts
+  run_step firstmate step_firstmate
+  run_step tailnet step_tailnet
+  run_step runner_up step_runner_up
   summary
 }
 
