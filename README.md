@@ -339,6 +339,11 @@ machine needs one step first (see [Windows machines](#windows-machines)).
 
 ## Setting up
 
+To take a bare Mac (Linux is a later target) to a machine ready for places,
+with Nix, Homebrew, the dotfiles, the Claude and Pi tools, a firstmate home
+and a tailnet short name, use the satellite launch script and its per-machine
+config: see [Launching a satellite](docs/satellite-launch.md).
+
 `init` checks that your sign-in can create runners for each repository.
 `machine add` reaches the machine over SSH. It copies runner-up there (to
 `~/.local/bin`) when it is missing, reads the machine's cores and memory, and

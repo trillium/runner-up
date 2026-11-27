@@ -18,3 +18,7 @@ Thumbs.db
 # Test
 coverage.out
 .no-mistakes/evidence/
+
+# Satellite launch: per-machine config and credentials (docs/satellite-launch.md)
+/scripts/satellite.local.conf
+/scripts/satellite.local.env
